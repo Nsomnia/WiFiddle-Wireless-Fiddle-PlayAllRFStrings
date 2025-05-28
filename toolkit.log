@@ -1,0 +1,3 @@
+2025-05-28 06:33:23 - Toolkit script started. PID: 4001
+2025-05-28 06:33:23 - CRITICAL: Could not initialize zcurses. Script cannot run.
+2025-05-28 06:37:03 - CRITICAL Error: zsh/curses module may have loaded, but zcurses_init command is NOT available.

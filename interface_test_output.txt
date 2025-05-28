@@ -1,0 +1,2 @@
+CRITICAL Error: zsh/curses module may have loaded, but zcurses_init command is NOT available.
+Please ensure your zsh/curses module is correctly installed, functional, and provides 'zcurses_init'.
